@@ -6,10 +6,21 @@ use svg::Document;
 use svg::node::element::Path;
 use svg::node::element::path::Data;
 
+#[derive(Clone,PartialEq,Debug)]
+struct Point {
+    x : f32,
+    y : f32
+}
+
+#[derive(Clone,PartialEq,Debug)]
+struct Segment {
+    from : Point,
+    to : Point,
+}
+
 #[derive(Clone)]
 struct Node {
-    x : f32,
-    y : f32,
+    pos : Point,
     edges : Vec<usize>,
 }
 
@@ -56,15 +67,27 @@ impl NodeSet {
     }
 }
 
-fn normal(from : (f32, f32), to : (f32,f32)) -> Option<(f32,f32)> {
-    let dx = to.0 - from.0; let dy = to.1 - from.1;
-    if (dx == 0.0) && (dy == 0.0) {
-        None
-    } else {
-        let scale = (dx*dx + dy*dy).sqrt();
-        Some( (dy/scale,-dx/scale) )
+impl Point {
+    fn normalize(&self) -> Option<Point> {
+        if (self.x == 0.0) && (self.y == 0.0) {
+            None
+        } else {
+            let scale = (self.x*self.x + self.y*self.y).sqrt();
+            Some( Point { x : self.x/scale, y : self.y/scale } )
+        }
+    }
+
+    fn tuple(&self) -> (f32, f32) {
+        (self.x, self.y)
     }
 }
+        
+impl Segment {
+    fn normal(&self) -> Option<Point> {
+        let dx = self.to.x - self.from.x; let dy = self.to.y - self.from.y;
+        Point{ x : dy, y : -dx }.normalize()
+    }
+} 
 
 impl Graph {
     fn add_directed_edge(&mut self, from : usize, to : usize) {
@@ -76,8 +99,8 @@ impl Graph {
         self.add_directed_edge(v2, v1);
     }
 
-    fn pos(&self, v : usize) -> (f32, f32) {
-        (self.nodes[v].x, self.nodes[v].y)
+    fn pos(&self, v : usize) -> Point {
+        self.nodes[v].pos.clone()
     }
 
     fn find_leaf(&self) -> usize {
@@ -105,8 +128,10 @@ impl Graph {
         for x in 0..w { 
             for y in 0..h { 
                 g.nodes.push(Node{ 
-                    x : x as f32 * scale,
-                    y : y as f32 * scale,
+                    pos : Point { 
+                        x : x as f32 * scale,
+                        y : y as f32 * scale,
+                    },
                     edges : Vec::new() });
             }
         }
@@ -135,7 +160,7 @@ impl Graph {
                 if z < -r || z > r { continue; }
                 let hx = (x as f32 * scale) + (y as f32 * scale * 0.5);
                 let hy = y as f32 * scale * s3o2;
-                let node = Node { x: hx, y: hy, edges: Vec::new() };
+                let node = Node { pos : Point { x: hx, y: hy }, edges: Vec::new() };
                 g.nodes.push(node);
                 let nidx = g.nodes.len() -1;
                 hex_map.insert( (x,y), nidx );
@@ -155,7 +180,7 @@ impl Graph {
     fn make_disconnected_copy(&self) -> Graph {
         let mut g = Graph { nodes : Vec::new() };
         for n in self.nodes.iter() {
-            g.nodes.push(Node { x : n.x, y : n.y, edges : Vec::new() });
+            g.nodes.push(Node { pos : n.pos.clone(), edges : Vec::new() });
         }
         g
     }
@@ -203,8 +228,8 @@ impl Graph {
         let mut tup_list = Vec::new();
         for n in to_node.edges.iter() {
             let npos = self.pos(*n);
-            let dx = npos.0 - to_node.x;
-            let dy = npos.1 - to_node.y;
+            let dx = npos.x - to_node.pos.x;
+            let dy = npos.y - to_node.pos.y;
             let dir = dy.atan2(dx);
             tup_list.push( (dir, *n) )
         }
@@ -263,17 +288,25 @@ mod tests {
     }
     #[test]
     fn test_simple_normal() {
-        let r1 = normal( (0.0,0.0), (0.0, 10.0) );
-        assert_eq!(r1, Some( (1.0,0.0) ) );
-        let r2 = normal( (11.0,11.0), (11.0,11.0) );
+        let s1 = Segment { 
+            from : Point { x : 0.0, y : 0.0 },
+            to : Point { x : 0.0, y : 10.0 } 
+        };
+        let r1 = s1.normal();
+        assert_eq!(r1, Some( Point { x : 1.0, y : 0.0 } ) );
+        let s2 = Segment {
+            from : Point { x : 11.0, y : 11.0},
+            to : Point { x : 11.0, y : 11.0 } 
+        };
+        let r2 = s2.normal();
         assert_eq!(r2, None);
     }
 }
 
 use clap::{Arg, App, SubCommand};
 
-fn offset( point : (f32, f32), normal : (f32, f32), scalar : f32 ) -> (f32, f32) {
-    (point.0 + normal.0 * scalar, point.1 + normal.1 * scalar)
+fn offset( point : Point, normal : Point, scalar : f32 ) -> Point {
+    Point { x : point.x + normal.x * scalar, y : point.y + normal.y * scalar }
 }
 
 fn make_path_from_graph(g : &Graph, off : f32) -> Data {
@@ -281,13 +314,14 @@ fn make_path_from_graph(g : &Graph, off : f32) -> Data {
     let mut data = Data::new();
     let mut last_node = root;
     let mut cur_node = g.right_turn(root, root);
-    data = data.move_to(g.pos(cur_node));
+    data = data.move_to(g.pos(cur_node).tuple());
     while cur_node != root {
         let next_node = g.right_turn(last_node,cur_node);
-        match normal(g.pos(next_node), g.pos(cur_node)) {
+        let seg = Segment { from : g.pos(next_node), to : g.pos(cur_node) };
+        match seg.normal() {
             None => (),
             Some( n ) => {
-                data = data.line_to(offset(g.pos(next_node),n,off));
+                data = data.line_to(offset(g.pos(next_node),n,off).tuple());
             }
         }
         last_node = cur_node; cur_node = next_node;
