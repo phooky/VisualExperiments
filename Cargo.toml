@@ -1,0 +1,10 @@
+[package]
+name = "Graph"
+version = "0.1.0"
+authors = ["Adam Mayer <phooky@gmail.com>"]
+
+[dependencies]
+svg = "0.5.7"
+rand = "0.3.18"
+clap = "2.28.0"
+
